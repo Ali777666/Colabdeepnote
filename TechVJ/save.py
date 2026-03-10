@@ -238,6 +238,13 @@ async def upload_via_user_session(
             await uclient.connect()
             # self.me ni to'ldirish — save_file.py ichida is_premium tekshiriladi
             uclient.me = await uclient.get_me()
+            # Bot peer'ini uclient cache ga yuklash — PEER_ID_INVALID oldini olish.
+            # uclient yangi session bo'lgani uchun bot peer'ini bilmaydi,
+            # get_users() MTProto orqali peer'ni resolve qilib cache ga yozadi.
+            try:
+                await uclient.get_users(chat_id)
+            except Exception:
+                pass
         except Exception as conn_err:
             await bot.send_message(user_id, f"**Ulanish xatosi:** `{conn_err}`")
             return False
