@@ -235,7 +235,7 @@ async def upload_via_user_session(
 
     try:
         try:
-            await uclient.connect()
+            await uclient.start()
         except Exception as conn_err:
             await bot.send_message(user_id, f"**Ulanish xatosi:** `{conn_err}`")
             return False
@@ -339,7 +339,7 @@ async def upload_via_user_session(
 
     finally:
         try:
-            await uclient.disconnect()
+            await uclient.stop()
         except Exception:
             pass
         # Funksiya tomonidan yaratilgan thumbnail ni tozalash
