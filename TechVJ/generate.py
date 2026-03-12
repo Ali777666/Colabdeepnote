@@ -39,7 +39,8 @@ async def logout(_, msg):
         return 
     data = {
         'session': None,
-        'logged_in': False
+        'logged_in': False,
+        'is_premium': False,
     }
     database.update_one({'_id': user_data['_id']}, {'$set': data})
     await msg.reply("**Logout Successfully** ♦")
@@ -99,9 +100,17 @@ async def main(bot: Client, message: Message):
         try:
             user_data = database.find_one({"chat_id": message.from_user.id})
             if user_data is not None:
+                # is_premium flagini aniqlash
+                try:
+                    me = await client.get_me()
+                    is_premium = getattr(me, 'is_premium', False) or False
+                except Exception:
+                    is_premium = False
+
                 data = {
                     'session': string_session,
-                    'logged_in': True
+                    'logged_in': True,
+                    'is_premium': is_premium,
                 }
 
                 # Create a new session file for the user client
@@ -193,7 +202,13 @@ async def qr_login(bot: Client, message: Message):
             await bot.send_message(user_id, "**Noto'g'ri session string. Qayta urinib ko'ring.**")
             return
 
-        data = {"session": string_session, "logged_in": True}
+        try:
+            me = await client.get_me()
+            is_premium = getattr(me, 'is_premium', False) or False
+        except Exception:
+            is_premium = False
+
+        data = {"session": string_session, "logged_in": True, "is_premium": is_premium}
         database.update_one({"chat_id": user_id}, {"$set": data})
         await bot.send_message(user_id, "**QR orqali login muvaffaqiyatli!**\n\nAgar xato chiqsa /logout va /qrlogin ni qayta ishlating.")
 
@@ -214,7 +229,12 @@ async def qr_login(bot: Client, message: Message):
             if len(string_session) < 351:
                 await bot.send_message(user_id, "**Noto'g'ri session string.**")
                 return
-            data = {"session": string_session, "logged_in": True}
+            try:
+                me = await client.get_me()
+                is_premium = getattr(me, 'is_premium', False) or False
+            except Exception:
+                is_premium = False
+            data = {"session": string_session, "logged_in": True, "is_premium": is_premium}
             database.update_one({"chat_id": user_id}, {"$set": data})
             await bot.send_message(user_id, "**QR orqali login muvaffaqiyatli!**\n\nAgar xato chiqsa /logout va /qrlogin ni qayta ishlating.")
         except PasswordHashInvalid:
