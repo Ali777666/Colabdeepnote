@@ -261,12 +261,13 @@ async def upload_via_user_session(
             uclient.me = await uclient.get_me()
             # Bot peer'ini uclient cache ga yuklash — PEER_ID_INVALID oldini olish.
             # uclient yangi session bo'lgani uchun bot peer'ini bilmaydi.
-            # get_chat(username) → ResolveUsername RPC → access_hash olinadi.
+            # Har doim username bilan resolve — raqamli ID access_hash=0 beradi (xato).
             try:
                 if _bot_username_cache:
-                    await uclient.get_chat(_bot_username_cache)
+                    await uclient.get_users(_bot_username_cache)
                 else:
-                    await uclient.get_chat(chat_id)
+                    # username yo'q — InputPeerUser bilan resolve
+                    await uclient.get_users(chat_id)
             except Exception:
                 pass
             # ── Premium check → split qaror ──
