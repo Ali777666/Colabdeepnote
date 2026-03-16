@@ -277,6 +277,10 @@ async def upload_via_user_session(
                     pass
             else:
                 # existing_client da me bo'lmasa to'ldiramiz
+                # Avval ulanishni tekshiramiz
+                if not uclient.is_connected:
+                    logger.warning("existing_client disconnected — reconnecting...")
+                    await uclient.connect()
                 if not getattr(uclient, 'me', None):
                     uclient.me = await uclient.get_me()
                 # Bot peer'ini resolve qilamiz
@@ -824,6 +828,46 @@ async def get_user_status_info(client, user_id):
         return f"Error checking user status: {str(e)}"
 
 # Helper function to create and connect client with retry logic
+async def ensure_connected(client):
+    """acc (user session) transport yopilgan bo'lsa qayta ulanadi.
+    Agar ulanish imkoni bo'lmasa False qaytaradi."""
+    try:
+        # 1) Pyrofork `is_connected` flagi (connect/disconnect da o'zgaradi)
+        if client.is_connected is False or client.is_connected is None:
+            logger.warning("User session disconnected (is_connected=False) — reconnecting...")
+            await client.connect()
+            if not getattr(client, 'me', None):
+                client.me = await client.get_me()
+            logger.info("User session reconnected successfully")
+            return True
+
+        # 2) Transport yopilgan bo'lishi mumkin (TCPTransport closed=True)
+        #    is_connected hali True bo'lib qolgan, lekin session.connection yopilgan
+        session = getattr(client, 'session', None)
+        if session:
+            conn = getattr(session, 'connection', None)
+            if conn:
+                transport = getattr(conn, 'transport', None)
+                if transport and getattr(transport, '_closed', False):
+                    logger.warning("User session transport closed — reconnecting...")
+                    # Avval eski sessionni to'xtatamiz
+                    try:
+                        client.is_connected = False
+                        await session.stop()
+                    except Exception:
+                        pass
+                    await client.connect()
+                    if not getattr(client, 'me', None):
+                        client.me = await client.get_me()
+                    logger.info("User session reconnected after transport close")
+                    return True
+
+        return True
+    except Exception as e:
+        logger.error(f"Reconnect failed: {type(e).__name__}: {e}")
+        return False
+
+
 async def create_client_session(session_string, client_name="saverestricted"):
     client = None
     for attempt in range(MAX_RETRIES):
@@ -1383,6 +1427,11 @@ async def process_posts(client: Client, message: Message, url: str, fromID: int,
         try:
             for msgid in range(fromID, toID + 1):
                 try:
+                    if not await ensure_connected(acc):
+                        await safe_send_message(client, message.chat.id,
+                            "❌ Session uzildi, qayta ulanib bo'lmadi.",
+                            reply_to_message_id=message.id)
+                        break
                     await handle_private(client, acc, message, chatid, msgid)
                     processed += 1
                 except Exception as e:
@@ -1420,6 +1469,11 @@ async def process_posts(client: Client, message: Message, url: str, fromID: int,
         try:
             for msgid in range(fromID, toID + 1):
                 try:
+                    if not await ensure_connected(acc):
+                        await safe_send_message(client, message.chat.id,
+                            "❌ Session uzildi, qayta ulanib bo'lmadi.",
+                            reply_to_message_id=message.id)
+                        break
                     await handle_private(client, acc, message, username, msgid)
                     processed += 1
                 except Exception:
@@ -1662,6 +1716,11 @@ async def handle_topic(client: Client, message: Message, url):
         processed_count = 0
         for msg_id in range(min_id, max_id + 1):
             try:
+                if not await ensure_connected(acc):
+                    await safe_send_message(client, message.chat.id,
+                        "❌ Session uzildi, qayta ulanib bo'lmadi.",
+                        reply_to_message_id=message.id)
+                    break
                 # For topic messages, we need to use a different approach since topic_id might not be supported
                 # Get the message by regular ID first
                 try:
@@ -2135,18 +2194,16 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     if "Document" == msg_type:
         # video extension bo'lsa Video sifatida yuborish
-        if file.endswith(('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm')):
+        if isinstance(file, str) and file.endswith(('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm')):
             doc_msg_type = "Video"
             extra = {}
-            if hasattr(msg, 'document') and msg.document:
-                for attr in msg.document.attributes:
-                    if hasattr(attr, 'duration'):
-                        extra["duration"] = attr.duration
-                    if hasattr(attr, 'width'):
-                        extra["width"] = attr.width
-                    if hasattr(attr, 'height'):
-                        extra["height"] = attr.height
-        elif file.endswith('.ogg'):
+            # Pyrofork Document da attributes yo'q — video uchun kerakli
+            # metadatani msg.video yoki msg.document attributlaridan olamiz
+            if hasattr(msg, 'video') and msg.video:
+                extra["duration"] = getattr(msg.video, 'duration', None)
+                extra["width"] = getattr(msg.video, 'width', None)
+                extra["height"] = getattr(msg.video, 'height', None)
+        elif isinstance(file, str) and file.endswith('.ogg'):
             doc_msg_type = "Voice"
             extra = {}
         else:
@@ -3338,12 +3395,9 @@ async def get_detailed_message_stats(client, chat_id, message_id):
                 stats["mime_type"] = message.document.mime_type if hasattr(message.document, "mime_type") else None
                 
             elif message.photo:
-                # Photo sizes
-                sizes = []
-                for size in message.photo.sizes:
-                    if hasattr(size, "width") and hasattr(size, "height"):
-                        sizes.append({"width": size.width, "height": size.height})
-                stats["photo_sizes"] = sizes
+                # Photo has width/height at top level, thumbs for thumbnails
+                stats["photo_size"] = {"width": message.photo.width, "height": message.photo.height}
+                stats["file_size"] = message.photo.file_size
         
         # Try to get reply info
         if message.reply_to_message_id:
@@ -3457,143 +3511,41 @@ async def get_channel_members_info(client, chat_id, limit=100):
         
 async def download_media_with_raw_api(client, message, file_path=None, progress_callback=None):
     """
-    Download media with optimized parameters using Raw API functions
-    
+    Download media using pyrogram's built-in download_media.
+    Raw API approach removed — pyrofork high-level types do not expose
+    raw attributes (file_access_hash, file_reference, dc_id).
+
     Args:
         client: The pyrogram client
         message: Message containing media
         file_path: Path to save the file (optional)
         progress_callback: Function to call with download progress (optional)
-        
+
     Returns:
-        Path to downloaded file or error
+        Path to downloaded file or error dict
     """
     try:
-        # Validate message has media
         if not message.media:
             return {"error": "No media in message"}
-            
-        # Determine media type and get input media
-        input_media = None
-        file_extension = None
-        
-        if message.photo:
-            # For photos, get the largest size
-            largest_photo = message.photo.sizes[-1]
-            input_media = types.InputPhotoFileLocation(
-                id=message.photo.file_id,
-                access_hash=message.photo.file_access_hash,
-                file_reference=message.photo.file_reference,
-                thumb_size=largest_photo.type
-            )
-            file_extension = ".jpg"
-            
-        elif message.document:
-            input_media = types.InputDocumentFileLocation(
-                id=message.document.file_id,
-                access_hash=message.document.file_access_hash,
-                file_reference=message.document.file_reference,
-                thumb_size=""
-            )
-            # Try to determine file extension from mime type or name
-            if hasattr(message.document, "file_name") and message.document.file_name:
-                file_extension = os.path.splitext(message.document.file_name)[1]
-            elif hasattr(message.document, "mime_type"):
-                if message.document.mime_type == "video/mp4":
-                    file_extension = ".mp4"
-                elif message.document.mime_type == "image/jpeg":
-                    file_extension = ".jpg"
-                elif message.document.mime_type == "image/png":
-                    file_extension = ".png"
-                elif message.document.mime_type == "image/gif":
-                    file_extension = ".gif"
-                elif message.document.mime_type == "application/pdf":
-                    file_extension = ".pdf"
-                else:
-                    file_extension = ""
-            else:
-                file_extension = ""
-                
-        elif message.video:
-            input_media = types.InputDocumentFileLocation(
-                id=message.video.file_id,
-                access_hash=message.video.file_access_hash,
-                file_reference=message.video.file_reference,
-                thumb_size=""
-            )
-            file_extension = ".mp4"
-            
-        elif message.audio:
-            input_media = types.InputDocumentFileLocation(
-                id=message.audio.file_id,
-                access_hash=message.audio.file_access_hash,
-                file_reference=message.audio.file_reference,
-                thumb_size=""
-            )
-            file_extension = ".mp3"
-        
-        else:
-            return {"error": "Unsupported media type"}
-            
-        # Determine file save path
+
+        # Determine file save path from media attributes
         if not file_path:
+            file_extension = ""
+            if message.document and getattr(message.document, 'file_name', None):
+                file_extension = os.path.splitext(message.document.file_name)[1]
+            elif message.video:
+                file_extension = ".mp4"
+            elif message.audio:
+                file_extension = ".mp3"
+            elif message.photo:
+                file_extension = ".jpg"
             file_path = f"{message.chat.id}_{message.id}{file_extension}"
-            
-        # Get file size if available
-        file_size = 0
-        if message.document and hasattr(message.document, "file_size"):
-            file_size = message.document.file_size
-        elif message.video and hasattr(message.video, "file_size"):
-            file_size = message.video.file_size
-        elif message.audio and hasattr(message.audio, "file_size"):
-            file_size = message.audio.file_size
-            
-        # Prepare download parameters
-        dc_id = message.media.document.dc_id if hasattr(message.media, "document") and hasattr(message.media.document, "dc_id") else None
-        if not dc_id and hasattr(message.media, "photo") and hasattr(message.media.photo, "dc_id"):
-            dc_id = message.media.photo.dc_id
-        
-        # If no DC ID found, fall back to regular download
-        if not dc_id:
-            return await client.download_media(message, file_path, progress=progress_callback)
-            
-        # Download the file with optimized parameters
-        with open(file_path, "wb") as f:
-            offset = 0
-            limit = 1024 * 1024  # Download in 1MB chunks
-            downloaded = 0
-            
-            while True:
-                try:
-                    result = await client.send(
-                        functions.upload.GetFile(
-                            location=input_media,
-                            offset=offset,
-                            limit=limit
-                        )
-                    )
-                    
-                    # Write chunk to file
-                    data = result.bytes
-                    f.write(data)
-                    
-                    # Update progress
-                    downloaded += len(data)
-                    if progress_callback:
-                        await progress_callback(downloaded, file_size)
-                        
-                    # Check if we've reached the end
-                    if len(data) < limit:
-                        break
-                        
-                    # Update offset for next chunk
-                    offset += limit
-                    
-                except Exception as chunk_error:
-                    return {"error": f"Error downloading chunk at offset {offset}: {str(chunk_error)}"}
-        
-        return file_path
-        
+
+        return await client.download_media(
+            message, file_path,
+            progress=progress_callback
+        )
+
     except Exception as e:
         return {"error": str(e)}
         
