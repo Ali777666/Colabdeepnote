@@ -332,16 +332,16 @@ async def upload_via_user_session(
                         await uclient.send_video(
                             chat_id=chat_id, video=part_path,
                             caption=part_caption,
-                            duration=extra.get("duration"),
-                            width=extra.get("width"),
-                            height=extra.get("height"), thumb=thumb,
+                            duration=extra.get("duration") or 0,
+                            width=extra.get("width") or 0,
+                            height=extra.get("height") or 0, thumb=thumb,
                             progress=_up_progress,
                         )
                     elif msg_type == "Audio":
                         await uclient.send_audio(
                             chat_id=chat_id, audio=part_path,
                             caption=part_caption,
-                            duration=extra.get("duration"),
+                            duration=extra.get("duration") or 0,
                             performer=extra.get("performer"),
                             title=extra.get("title"), thumb=thumb,
                             progress=_up_progress,
@@ -350,7 +350,7 @@ async def upload_via_user_session(
                         await uclient.send_voice(
                             chat_id=chat_id, voice=part_path,
                             caption=part_caption,
-                            duration=extra.get("duration"),
+                            duration=extra.get("duration") or 0,
                             progress=_up_progress,
                         )
                     elif msg_type == "Photo":
@@ -368,8 +368,8 @@ async def upload_via_user_session(
                     elif msg_type == "VideoNote":
                         await uclient.send_video_note(
                             chat_id=chat_id, video_note=part_path,
-                            duration=extra.get("duration"),
-                            length=extra.get("length"),
+                            duration=extra.get("duration") or 0,
+                            length=extra.get("length") or 0,
                             progress=_up_progress,
                         )
                     elif msg_type == "Sticker":
@@ -2200,9 +2200,9 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
             # Pyrofork Document da attributes yo'q — video uchun kerakli
             # metadatani msg.video yoki msg.document attributlaridan olamiz
             if hasattr(msg, 'video') and msg.video:
-                extra["duration"] = getattr(msg.video, 'duration', None)
-                extra["width"] = getattr(msg.video, 'width', None)
-                extra["height"] = getattr(msg.video, 'height', None)
+                extra["duration"] = getattr(msg.video, 'duration', 0) or 0
+                extra["width"] = getattr(msg.video, 'width', 0) or 0
+                extra["height"] = getattr(msg.video, 'height', 0) or 0
         elif isinstance(file, str) and file.endswith('.ogg'):
             doc_msg_type = "Voice"
             extra = {}
@@ -2228,9 +2228,9 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Video" == msg_type:
         extra = {
-            "duration": msg.video.duration if hasattr(msg.video, 'duration') else None,
-            "width": msg.video.width if hasattr(msg.video, 'width') else None,
-            "height": msg.video.height if hasattr(msg.video, 'height') else None,
+            "duration": getattr(msg.video, 'duration', 0) or 0,
+            "width": getattr(msg.video, 'width', 0) or 0,
+            "height": getattr(msg.video, 'height', 0) or 0,
         }
         await upload_via_user_session(
             bot=client,
@@ -2250,8 +2250,8 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "VideoNote" == msg_type:
         extra = {
-            "duration": msg.video_note.duration if hasattr(msg.video_note, 'duration') else None,
-            "length": msg.video_note.length if hasattr(msg.video_note, 'length') else None,
+            "duration": getattr(msg.video_note, 'duration', 0) or 0,
+            "length": getattr(msg.video_note, 'length', 0) or 0,
         }
         await upload_via_user_session(
             bot=client,
@@ -2269,7 +2269,7 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Voice" == msg_type:
         extra = {
-            "duration": msg.voice.duration if hasattr(msg.voice, 'duration') else None,
+            "duration": getattr(msg.voice, 'duration', 0) or 0,
         }
         await upload_via_user_session(
             bot=client,
@@ -2289,9 +2289,9 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Audio" == msg_type:
         extra = {
-            "duration": msg.audio.duration if hasattr(msg.audio, 'duration') else None,
-            "performer": msg.audio.performer if hasattr(msg.audio, 'performer') else None,
-            "title": msg.audio.title if hasattr(msg.audio, 'title') else None,
+            "duration": getattr(msg.audio, 'duration', 0) or 0,
+            "performer": getattr(msg.audio, 'performer', None),
+            "title": getattr(msg.audio, 'title', None),
         }
         await upload_via_user_session(
             bot=client,
