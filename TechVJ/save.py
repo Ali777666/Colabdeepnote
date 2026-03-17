@@ -188,6 +188,72 @@ async def make_thumbnail(file_path: str):
     return None
 
 
+async def get_video_metadata(file_path: str) -> dict:
+    """
+    FFprobe orqali video fayldan duration, width, height oladi.
+    Qaytaradi: {"duration": int, "width": int, "height": int}
+    FFprobe topilmasa yoki xato bo'lsa bo'sh dict qaytaradi.
+    """
+    ffmpeg = get_ffmpeg()
+    if not ffmpeg:
+        return {}
+
+    ffprobe = ffmpeg.replace("ffmpeg", "ffprobe") if "ffmpeg" in ffmpeg else "ffprobe"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffprobe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,duration",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return {}
+
+        import json as _json
+        data = _json.loads(stdout.decode())
+
+        width = 0
+        height = 0
+        duration = 0.0
+
+        # Stream dan olish
+        streams = data.get("streams", [])
+        if streams:
+            s = streams[0]
+            width = int(s.get("width", 0) or 0)
+            height = int(s.get("height", 0) or 0)
+            # Ba'zi formatlarda stream.duration bo'ladi
+            if s.get("duration"):
+                try:
+                    duration = float(s["duration"])
+                except (ValueError, TypeError):
+                    pass
+
+        # Format dan duration olish (aniqroq)
+        fmt = data.get("format", {})
+        if fmt.get("duration"):
+            try:
+                duration = float(fmt["duration"])
+            except (ValueError, TypeError):
+                pass
+
+        return {
+            "duration": int(duration),
+            "width": width,
+            "height": height,
+        }
+    except Exception as e:
+        logger.debug(f"get_video_metadata xato: {e}")
+        return {}
+
+
 async def write_buffer_to_disk(bio: io.BytesIO, path: str) -> None:
     """BytesIO ni diskka async yozadi (bloklovchi open() o'rniga)."""
     async with aiofiles.open(path, "wb") as f:
@@ -283,14 +349,14 @@ async def upload_via_user_session(
                     await uclient.connect()
                 if not getattr(uclient, 'me', None):
                     uclient.me = await uclient.get_me()
-                # Bot peer'ini resolve qilamiz
-                try:
-                    if _bot_username_cache:
-                        await uclient.get_users(_bot_username_cache)
-                    else:
-                        await uclient.get_users(chat_id)
-                except Exception:
-                    pass
+                    # Bot peer'ini resolve — faqat me yangi olinganda (ya'ni birinchi marta)
+                    try:
+                        if _bot_username_cache:
+                            await uclient.get_users(_bot_username_cache)
+                        else:
+                            await uclient.get_users(chat_id)
+                    except Exception:
+                        pass
             # ── Premium check → split qaror ──
             is_premium = getattr(uclient.me, 'is_premium', False)
             # BytesIO uchun getsize ishlamaydi — tashqaridan kelgan file_size ishlatiladi
@@ -335,6 +401,7 @@ async def upload_via_user_session(
                             duration=extra.get("duration") or 0,
                             width=extra.get("width") or 0,
                             height=extra.get("height") or 0, thumb=thumb,
+                            supports_streaming=True,
                             progress=_up_progress,
                         )
                     elif msg_type == "Audio":
@@ -2197,12 +2264,19 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
         if isinstance(file, str) and file.endswith(('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm')):
             doc_msg_type = "Video"
             extra = {}
-            # Pyrofork Document da attributes yo'q — video uchun kerakli
-            # metadatani msg.video yoki msg.document attributlaridan olamiz
+            # Pyrofork Document da video metadata yo'q —
+            # avval msg.video dan olishga urinamiz, bo'lmasa ffprobe bilan aniqlaymiz
             if hasattr(msg, 'video') and msg.video:
-                extra["duration"] = getattr(msg.video, 'duration', 0) or 0
-                extra["width"] = getattr(msg.video, 'width', 0) or 0
-                extra["height"] = getattr(msg.video, 'height', 0) or 0
+                extra["duration"] = getattr(msg.video, 'duration', None)
+                extra["width"] = getattr(msg.video, 'width', None)
+                extra["height"] = getattr(msg.video, 'height', None)
+            # ffprobe bilan aniqlaymiz (msg.video bo'lmasa yoki qiymatlari None/0 bo'lsa)
+            if not extra.get("duration") or not extra.get("width"):
+                probe = await get_video_metadata(file)
+                if probe:
+                    extra["duration"] = extra.get("duration") or probe.get("duration", 0)
+                    extra["width"] = extra.get("width") or probe.get("width", 0)
+                    extra["height"] = extra.get("height") or probe.get("height", 0)
         elif isinstance(file, str) and file.endswith('.ogg'):
             doc_msg_type = "Voice"
             extra = {}
@@ -2228,9 +2302,9 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Video" == msg_type:
         extra = {
-            "duration": getattr(msg.video, 'duration', 0) or 0,
-            "width": getattr(msg.video, 'width', 0) or 0,
-            "height": getattr(msg.video, 'height', 0) or 0,
+            "duration": msg.video.duration,
+            "width": msg.video.width,
+            "height": msg.video.height,
         }
         await upload_via_user_session(
             bot=client,
@@ -2250,8 +2324,8 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "VideoNote" == msg_type:
         extra = {
-            "duration": getattr(msg.video_note, 'duration', 0) or 0,
-            "length": getattr(msg.video_note, 'length', 0) or 0,
+            "duration": msg.video_note.duration,
+            "length": msg.video_note.length,
         }
         await upload_via_user_session(
             bot=client,
@@ -2269,7 +2343,7 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Voice" == msg_type:
         extra = {
-            "duration": getattr(msg.voice, 'duration', 0) or 0,
+            "duration": msg.voice.duration,
         }
         await upload_via_user_session(
             bot=client,
@@ -2289,9 +2363,9 @@ async def _handle_private_inner(client: Client, acc, message: Message, chatid: i
 
     elif "Audio" == msg_type:
         extra = {
-            "duration": getattr(msg.audio, 'duration', 0) or 0,
-            "performer": getattr(msg.audio, 'performer', None),
-            "title": getattr(msg.audio, 'title', None),
+            "duration": msg.audio.duration,
+            "performer": msg.audio.performer,
+            "title": msg.audio.title,
         }
         await upload_via_user_session(
             bot=client,
